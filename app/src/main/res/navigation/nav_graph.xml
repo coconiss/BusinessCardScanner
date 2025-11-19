@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<navigation xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/nav_graph"
+    app:startDestination="@id/contactListFragment">
+
+    <fragment
+        android:id="@+id/contactListFragment"
+        android:name="com.coconiss.businesscardscanner.ui.ContactListFragment"
+        android:label="연락처 목록" >
+        <action
+            android:id="@+id/action_contactList_to_camera"
+            app:destination="@id/cameraFragment" />
+    </fragment>
+
+    <fragment
+        android:id="@+id/cameraFragment"
+        android:name="com.coconiss.businesscardscanner.ui.CameraFragment"
+        android:label="명함 촬영" >
+        <action
+            android:id="@+id/action_camera_to_editContact"
+            app:destination="@id/editContactFragment" />
+    </fragment>
+
+    <fragment
+        android:id="@+id/editContactFragment"
+        android:name="com.coconiss.businesscardscanner.ui.EditContactFragment"
+        android:label="연락처 편집" />
+</navigation>
