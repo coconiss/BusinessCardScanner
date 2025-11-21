@@ -21,4 +21,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "BusinessCardScanner"
 include(":app")
- 
+include(":opencv")

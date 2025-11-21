@@ -25,11 +25,13 @@ import com.coconiss.businesscardscanner.R
 import com.coconiss.businesscardscanner.data.Contact
 import com.coconiss.businesscardscanner.databinding.FragmentCameraBinding
 import com.coconiss.businesscardscanner.ocr.ContactParser
+import com.coconiss.businesscardscanner.ocr.ImagePreprocessor
 import com.coconiss.businesscardscanner.ocr.TextRecognizer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.opencv.android.OpenCVLoader
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.*
@@ -46,6 +48,7 @@ class CameraFragment : Fragment() {
     private lateinit var cameraExecutor: ExecutorService
     private lateinit var textRecognizer: TextRecognizer
     private lateinit var contactParser: ContactParser
+    private lateinit var imagePreprocessor: ImagePreprocessor
 
     private val requestCameraPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -78,11 +81,19 @@ class CameraFragment : Fragment() {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
 
+        // OpenCV 초기화
+        if (!OpenCVLoader.initDebug()) {
+            Log.e("OpenCV", "OpenCV 초기화 실패")
+            Toast.makeText(requireContext(), "이미지 처리 라이브러리 초기화 실패", Toast.LENGTH_SHORT).show()
+        } else {
+            Log.d("OpenCV", "OpenCV 초기화 성공")
+        }
+
         textRecognizer = TextRecognizer()
         contactParser = ContactParser()
+        imagePreprocessor = ImagePreprocessor()
         cameraExecutor = Executors.newSingleThreadExecutor()
 
-        // 버튼 클릭 이벤트
         binding.btnCapture.setOnClickListener {
             takePhoto()
         }
@@ -95,7 +106,6 @@ class CameraFragment : Fragment() {
             findNavController().navigateUp()
         }
 
-        // 카메라 권한 확인 및 시작
         if (ContextCompat.checkSelfPermission(
                 requireContext(),
                 Manifest.permission.CAMERA
@@ -119,6 +129,7 @@ class CameraFragment : Fragment() {
 
             imageCapture = ImageCapture.Builder()
                 .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
+                .setTargetRotation(binding.previewView.display.rotation)
                 .build()
 
             val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
@@ -150,6 +161,8 @@ class CameraFragment : Fragment() {
 
         binding.progressBar.visibility = View.VISIBLE
         binding.btnCapture.isEnabled = false
+        binding.statusText.visibility = View.VISIBLE
+        binding.statusText.text = "촬영 중..."
 
         imageCapture.takePicture(
             outputOptions,
@@ -162,6 +175,7 @@ class CameraFragment : Fragment() {
                 override fun onError(exc: ImageCaptureException) {
                     binding.progressBar.visibility = View.GONE
                     binding.btnCapture.isEnabled = true
+                    binding.statusText.visibility = View.GONE
                     Toast.makeText(requireContext(), "촬영 실패: ${exc.message}", Toast.LENGTH_SHORT).show()
                 }
             }
@@ -171,6 +185,10 @@ class CameraFragment : Fragment() {
     private fun processImageFile(file: File) {
         CoroutineScope(Dispatchers.IO).launch {
             try {
+                withContext(Dispatchers.Main) {
+                    binding.statusText.text = "이미지 로딩 중..."
+                }
+
                 val exif = ExifInterface(file.absolutePath)
                 val orientation = exif.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
                 val rotationDegrees = when (orientation) {
@@ -183,18 +201,52 @@ class CameraFragment : Fragment() {
                 val bitmap = BitmapFactory.decodeFile(file.absolutePath)
                 val rotatedBitmap = rotateBitmap(bitmap, rotationDegrees)
 
-                // Crop the image based on the guideline
+                withContext(Dispatchers.Main) {
+                    binding.statusText.text = "명함 영역 자르는 중..."
+                }
+
                 val guidelineRect = binding.guidelineView.getGuidelineRect()
                 val croppedBitmap = cropImage(rotatedBitmap, guidelineRect)
 
-                val text = textRecognizer.recognizeText(croppedBitmap)
+                withContext(Dispatchers.Main) {
+                    binding.statusText.text = "이미지 전처리 중..."
+                }
+
+                // 이미지 전처리 적용
+                val preprocessedBitmap = try {
+                    imagePreprocessor.preprocessBusinessCard(croppedBitmap)
+                } catch (e: Exception) {
+                    Log.e("Preprocessing", "전처리 실패, 간단한 전처리 사용: ${e.message}")
+                    imagePreprocessor.simplePreprocess(croppedBitmap)
+                }
+
+                // 전처리된 이미지를 파일로 저장
+                val preprocessedFile = File(
+                    requireContext().cacheDir,
+                    "preprocessed_${file.name}"
+                )
+                preprocessedFile.outputStream().use { output ->
+                    preprocessedBitmap.compress(Bitmap.CompressFormat.JPEG, 95, output)
+                }
+
+                withContext(Dispatchers.Main) {
+                    binding.statusText.text = "텍스트 인식 중..."
+                }
+
+                val text = textRecognizer.recognizeText(preprocessedBitmap)
                 Log.d("OcrResult", "Recognized Text: ${text.text}")
+
+                withContext(Dispatchers.Main) {
+                    binding.statusText.text = "정보 추출 중..."
+                }
+
                 val contact = contactParser.parseContact(text)
                 contact.imageUri = file.absolutePath
 
                 withContext(Dispatchers.Main) {
                     binding.progressBar.visibility = View.GONE
                     binding.btnCapture.isEnabled = true
+                    binding.statusText.visibility = View.GONE
 
                     if (text.text.isNotEmpty()) {
                         navigateToEditContact(contact)
@@ -206,7 +258,9 @@ class CameraFragment : Fragment() {
                 withContext(Dispatchers.Main) {
                     binding.progressBar.visibility = View.GONE
                     binding.btnCapture.isEnabled = true
+                    binding.statusText.visibility = View.GONE
                     Toast.makeText(requireContext(), "처리 실패: ${e.message}", Toast.LENGTH_SHORT).show()
+                    Log.e("ProcessError", "Error: ${e.stackTraceToString()}")
                 }
             }
         }
@@ -214,6 +268,8 @@ class CameraFragment : Fragment() {
 
     private fun processImageUri(uri: Uri) {
         binding.progressBar.visibility = View.VISIBLE
+        binding.statusText.visibility = View.VISIBLE
+        binding.statusText.text = "이미지 로딩 중..."
 
         CoroutineScope(Dispatchers.IO).launch {
             try {
@@ -221,7 +277,18 @@ class CameraFragment : Fragment() {
                 val bitmap = BitmapFactory.decodeStream(inputStream)
                 inputStream?.close()
 
-                // 파일로 저장
+                withContext(Dispatchers.Main) {
+                    binding.statusText.text = "이미지 전처리 중..."
+                }
+
+                // 이미지 전처리
+                val preprocessedBitmap = try {
+                    imagePreprocessor.preprocessBusinessCard(bitmap)
+                } catch (e: Exception) {
+                    Log.e("Preprocessing", "전처리 실패, 간단한 전처리 사용: ${e.message}")
+                    imagePreprocessor.simplePreprocess(bitmap)
+                }
+
                 val photoFile = File(
                     requireContext().cacheDir,
                     SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault())
@@ -229,16 +296,26 @@ class CameraFragment : Fragment() {
                 )
 
                 photoFile.outputStream().use { output ->
-                    bitmap.compress(Bitmap.CompressFormat.JPEG, 90, output)
+                    preprocessedBitmap.compress(Bitmap.CompressFormat.JPEG, 95, output)
                 }
 
-                val text = textRecognizer.recognizeText(bitmap)
+                withContext(Dispatchers.Main) {
+                    binding.statusText.text = "텍스트 인식 중..."
+                }
+
+                val text = textRecognizer.recognizeText(preprocessedBitmap)
                 Log.d("OcrResult", "Recognized Text: ${text.text}")
+
+                withContext(Dispatchers.Main) {
+                    binding.statusText.text = "정보 추출 중..."
+                }
+
                 val contact = contactParser.parseContact(text)
                 contact.imageUri = photoFile.absolutePath
 
                 withContext(Dispatchers.Main) {
                     binding.progressBar.visibility = View.GONE
+                    binding.statusText.visibility = View.GONE
 
                     if (text.text.isNotEmpty()) {
                         navigateToEditContact(contact)
@@ -249,7 +326,9 @@ class CameraFragment : Fragment() {
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
                     binding.progressBar.visibility = View.GONE
+                    binding.statusText.visibility = View.GONE
                     Toast.makeText(requireContext(), "처리 실패: ${e.message}", Toast.LENGTH_SHORT).show()
+                    Log.e("ProcessError", "Error: ${e.stackTraceToString()}")
                 }
             }
         }
@@ -262,19 +341,15 @@ class CameraFragment : Fragment() {
         val viewWidth = binding.previewView.width.toFloat()
         val viewHeight = binding.previewView.height.toFloat()
 
-        // PreviewView's default scale type is FILL_CENTER.
-        // It scales the image to fill the view, cropping the excess.
         val scale = max(viewWidth / imageWidth, viewHeight / imageHeight)
 
-        // The offset of the scaled image within the view.
         val dx = (viewWidth - imageWidth * scale) / 2f
         val dy = (viewHeight - imageHeight * scale) / 2f
 
-        // Map the crop rectangle from view coordinates to image coordinates.
-        val imageCropLeft = ((cropRect.left - dx) / scale).toInt()
-        val imageCropTop = ((cropRect.top - dy) / scale).toInt()
-        val imageCropWidth = (cropRect.width() / scale).toInt()
-        val imageCropHeight = (cropRect.height() / scale).toInt()
+        val imageCropLeft = ((cropRect.left - dx) / scale).toInt().coerceAtLeast(0)
+        val imageCropTop = ((cropRect.top - dy) / scale).toInt().coerceAtLeast(0)
+        val imageCropWidth = (cropRect.width() / scale).toInt().coerceAtMost(bitmap.width - imageCropLeft)
+        val imageCropHeight = (cropRect.height() / scale).toInt().coerceAtMost(bitmap.height - imageCropTop)
 
         return Bitmap.createBitmap(
             bitmap,
