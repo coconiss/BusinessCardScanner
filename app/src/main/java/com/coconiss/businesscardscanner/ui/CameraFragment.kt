@@ -39,8 +39,6 @@ import java.text.SimpleDateFormat
 import java.util.*
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
-import kotlin.math.max
-import kotlin.math.min
 
 class CameraFragment : Fragment() {
 
@@ -88,7 +86,6 @@ class CameraFragment : Fragment() {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
 
-        // OpenCV 초기화
         if (!OpenCVLoader.initDebug()) {
             Log.e("OpenCV", "OpenCV 초기화 실패")
             Toast.makeText(requireContext(), "이미지 처리 라이브러리 초기화 실패", Toast.LENGTH_SHORT).show()
@@ -130,7 +127,6 @@ class CameraFragment : Fragment() {
         cameraProviderFuture.addListener({
             cameraProvider = cameraProviderFuture.get()
 
-            // Preview 설정
             val preview = Preview.Builder()
                 .setTargetAspectRatio(AspectRatio.RATIO_4_3)
                 .build()
@@ -138,21 +134,18 @@ class CameraFragment : Fragment() {
                     it.setSurfaceProvider(binding.previewView.surfaceProvider)
                 }
 
-            // ImageCapture 설정 (개선: 고해상도, 고품질)
             imageCapture = ImageCapture.Builder()
                 .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
-                .setTargetResolution(Size(1080, 1920)) // 세로 해상도 (폭 x 높이)
+                .setTargetResolution(Size(1080, 1920))
                 .setTargetRotation(binding.previewView.display.rotation)
-                .setFlashMode(ImageCapture.FLASH_MODE_AUTO) // 자동 플래시
+                .setFlashMode(ImageCapture.FLASH_MODE_AUTO)
                 .build()
 
             val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
 
             try {
-                // 기존 바인딩 해제
                 cameraProvider.unbindAll()
 
-                // 카메라와 use case 바인딩
                 camera = cameraProvider.bindToLifecycle(
                     viewLifecycleOwner,
                     cameraSelector,
@@ -160,7 +153,6 @@ class CameraFragment : Fragment() {
                     imageCapture
                 )
 
-                // 터치 포커스 설정
                 setupTouchFocus()
 
             } catch (e: Exception) {
@@ -170,9 +162,6 @@ class CameraFragment : Fragment() {
         }, ContextCompat.getMainExecutor(requireContext()))
     }
 
-    /**
-     * 터치 포커스 기능 설정
-     */
     private fun setupTouchFocus() {
         binding.previewView.setOnTouchListener { _, event ->
             when (event.action) {
@@ -183,17 +172,14 @@ class CameraFragment : Fragment() {
                     val factory = binding.previewView.meteringPointFactory
                     val point = factory.createPoint(event.x, event.y)
 
-                    // 포커스 및 노출 측정 액션 생성
                     val action = FocusMeteringAction.Builder(point)
                         .setAutoCancelDuration(3, java.util.concurrent.TimeUnit.SECONDS)
                         .build()
 
-                    // 포커스 실행
                     camera?.cameraControl?.startFocusAndMetering(action)?.addListener({
                         Log.d("CameraFragment", "포커스 완료")
                     }, ContextCompat.getMainExecutor(requireContext()))
 
-                    // 포커스 인디케이터 표시 (선택사항)
                     showFocusIndicator(event.x, event.y)
 
                     return@setOnTouchListener true
@@ -203,18 +189,13 @@ class CameraFragment : Fragment() {
         }
     }
 
-    /**
-     * 포커스 인디케이터 표시 (선택사항 - UI 피드백)
-     */
     private fun showFocusIndicator(x: Float, y: Float) {
-        // 여기에 포커스 링 애니메이션 추가 가능
         Log.d("CameraFragment", "포커스 위치: ($x, $y)")
     }
 
     private fun takePhoto() {
         val imageCapture = imageCapture ?: return
 
-        // 촬영 전 포커스 트리거 (중앙)
         val centerX = binding.previewView.width / 2f
         val centerY = binding.previewView.height / 2f
         val factory = binding.previewView.meteringPointFactory
@@ -267,7 +248,6 @@ class CameraFragment : Fragment() {
 
                 Log.d(TAG, "=== 이미지 처리 시작 ===")
 
-                // 이미지 로딩 (메모리 효율적으로, 회전 없이)
                 val bitmap = decodeSampledBitmapFromFile(file.absolutePath, 2048, 2048)
 
                 Log.d(TAG, "로딩된 이미지 크기: ${bitmap.width} x ${bitmap.height}")
@@ -275,12 +255,10 @@ class CameraFragment : Fragment() {
                 withContext(Dispatchers.Main) {
                     binding.statusText.text = "명함 영역 자르는 중..."
 
-                    // 가이드라인 정보 로깅
                     val guidelineRect = binding.guidelineView.getGuidelineRect()
                     Log.d(TAG, "PreviewView 크기: ${binding.previewView.width} x ${binding.previewView.height}")
                 }
 
-                // 가이드라인 영역으로 크롭
                 val guidelineRect = withContext(Dispatchers.Main) {
                     binding.guidelineView.getGuidelineRect()
                 }
@@ -288,7 +266,6 @@ class CameraFragment : Fragment() {
 
                 Log.d(TAG, "크롭된 이미지 크기: ${croppedBitmap.width} x ${croppedBitmap.height}")
 
-                // 크롭 결과 저장 (디버깅용)
                 val croppedFile = File(
                     requireContext().cacheDir,
                     "cropped_${file.name}"
@@ -302,18 +279,23 @@ class CameraFragment : Fragment() {
                     binding.statusText.text = "이미지 전처리 중..."
                 }
 
-                // 이미지 전처리 적용
+                //val preprocessedBitmap = try {
+                //    imagePreprocessor.minimalPreprocess(croppedBitmap)
+                //} catch (e: Exception) {
+                //    Log.e("Preprocessing", "전처리 실패, 간단한 전처리 사용: ${e.message}")
+                //    imagePreprocessor.simplePreprocess(croppedBitmap)
+                //}
+
+                // 옵션 2: 자동 명함 검출 켜기 (기존)
                 val preprocessedBitmap = try {
-                    // enableWarp를 false로 설정하여 자동 명함 검출 비활성화
-                    imagePreprocessor.minimalPreprocess(croppedBitmap)
+                    imagePreprocessor.preprocessBusinessCard(croppedBitmap, enableWarp = true)
                 } catch (e: Exception) {
-                    Log.e("Preprocessing", "전처리 실패, 간단한 전처리 사용: ${e.message}")
-                    imagePreprocessor.simplePreprocess(croppedBitmap)
+                    Log.e("Preprocessing", "전처리 실패: ${e.message}")
+                    imagePreprocessor.minimalPreprocess(croppedBitmap)
                 }
 
                 Log.d(TAG, "전처리된 이미지 크기: ${preprocessedBitmap.width} x ${preprocessedBitmap.height}")
 
-                // 전처리된 이미지를 파일로 저장
                 val preprocessedFile = File(
                     requireContext().cacheDir,
                     "preprocessed_${file.name}"
@@ -327,7 +309,6 @@ class CameraFragment : Fragment() {
                     binding.statusText.text = "텍스트 인식 중..."
                 }
 
-                // OCR 수행
                 val text = textRecognizer.recognizeText(preprocessedBitmap)
                 Log.d(TAG, "인식된 텍스트: ${text.text}")
                 Log.d(TAG, "텍스트 블록 수: ${text.textBlocks.size}")
@@ -336,7 +317,6 @@ class CameraFragment : Fragment() {
                     binding.statusText.text = "정보 추출 중..."
                 }
 
-                // 연락처 정보 파싱
                 val contact = contactParser.parseContact(text)
                 contact.imageUri = file.absolutePath
 
@@ -359,7 +339,6 @@ class CameraFragment : Fragment() {
                     }
                 }
 
-                // 메모리 해제
                 bitmap.recycle()
                 croppedBitmap.recycle()
                 preprocessedBitmap.recycle()
@@ -409,7 +388,6 @@ class CameraFragment : Fragment() {
                     binding.statusText.text = "이미지 전처리 중..."
                 }
 
-                // 이미지 전처리
                 val preprocessedBitmap = try {
                     imagePreprocessor.preprocessBusinessCard(bitmap)
                 } catch (e: Exception) {
@@ -458,7 +436,6 @@ class CameraFragment : Fragment() {
                     }
                 }
 
-                // 메모리 해제
                 bitmap.recycle()
                 preprocessedBitmap.recycle()
 
@@ -480,22 +457,73 @@ class CameraFragment : Fragment() {
     }
 
     /**
-     * 메모리 효율적인 비트맵 디코딩
+     * 메모리 효율적인 비트맵 디코딩 + EXIF 회전 처리
      */
     private fun decodeSampledBitmapFromFile(
         path: String,
         reqWidth: Int,
         reqHeight: Int
     ): Bitmap {
-        return BitmapFactory.Options().run {
+        val bitmap = BitmapFactory.Options().run {
             inJustDecodeBounds = true
             BitmapFactory.decodeFile(path, this)
-
-            // 샘플 크기 계산
             inSampleSize = calculateInSampleSize(this, reqWidth, reqHeight)
-
             inJustDecodeBounds = false
             BitmapFactory.decodeFile(path, this)
+        }
+
+        Log.d(TAG, "디코딩된 비트맵 크기 (회전 전): ${bitmap.width} x ${bitmap.height}")
+
+        return rotateBitmapIfRequired(bitmap, path)
+    }
+
+    /**
+     * EXIF 정보에 따라 비트맵 회전
+     */
+    private fun rotateBitmapIfRequired(bitmap: Bitmap, imagePath: String): Bitmap {
+        try {
+            val exif = ExifInterface(imagePath)
+            val orientation = exif.getAttributeInt(
+                ExifInterface.TAG_ORIENTATION,
+                ExifInterface.ORIENTATION_NORMAL
+            )
+
+            Log.d(TAG, "EXIF Orientation 값: $orientation")
+
+            val rotationDegrees = when (orientation) {
+                ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+                ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+                ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+                ExifInterface.ORIENTATION_NORMAL -> 0f
+                else -> 0f
+            }
+
+            if (rotationDegrees == 0f) {
+                Log.d(TAG, "회전 불필요 (EXIF orientation: $orientation)")
+                return bitmap
+            }
+
+            Log.d(TAG, "이미지 회전 적용: ${rotationDegrees}도")
+
+            val matrix = Matrix()
+            matrix.postRotate(rotationDegrees)
+
+            val rotatedBitmap = Bitmap.createBitmap(
+                bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true
+            )
+
+            if (rotatedBitmap != bitmap) {
+                bitmap.recycle()
+            }
+
+            Log.d(TAG, "회전 후 이미지 크기: ${rotatedBitmap.width} x ${rotatedBitmap.height}")
+
+            return rotatedBitmap
+
+        } catch (e: Exception) {
+            Log.e(TAG, "EXIF 회전 처리 실패: ${e.message}")
+            e.printStackTrace()
+            return bitmap
         }
     }
 
@@ -524,7 +552,7 @@ class CameraFragment : Fragment() {
     }
 
     /**
-     * 가이드라인 영역으로 이미지 크롭 (개선 버전)
+     * 가이드라인 영역으로 이미지 크롭
      */
     private fun cropImage(bitmap: Bitmap, cropRect: RectF): Bitmap {
         try {
@@ -540,8 +568,6 @@ class CameraFragment : Fragment() {
             Log.d(TAG, "가이드라인 Rect: left=${cropRect.left}, top=${cropRect.top}, " +
                     "width=${cropRect.width()}, height=${cropRect.height()}")
 
-            // PreviewView의 ScaleType 확인 (기본값: FILL_CENTER)
-            // FILL_CENTER는 이미지를 뷰에 꽉 채우면서 비율 유지
             val imageAspect = imageWidth / imageHeight
             val viewAspect = viewWidth / viewHeight
 
@@ -550,12 +576,10 @@ class CameraFragment : Fragment() {
             val dy: Float
 
             if (imageAspect > viewAspect) {
-                // 이미지가 더 넓음 -> 높이 기준으로 스케일, 좌우가 잘림
                 scale = viewHeight / imageHeight
                 dx = (viewWidth - imageWidth * scale) / 2f
                 dy = 0f
             } else {
-                // 이미지가 더 좁음 -> 너비 기준으로 스케일, 상하가 잘림
                 scale = viewWidth / imageWidth
                 dx = 0f
                 dy = (viewHeight - imageHeight * scale) / 2f
@@ -563,13 +587,11 @@ class CameraFragment : Fragment() {
 
             Log.d(TAG, "Scale: $scale, dx: $dx, dy: $dy")
 
-            // 뷰 좌표를 이미지 좌표로 변환
             val imageCropLeft = ((cropRect.left - dx) / scale).toInt()
             val imageCropTop = ((cropRect.top - dy) / scale).toInt()
             val imageCropRight = ((cropRect.right - dx) / scale).toInt()
             val imageCropBottom = ((cropRect.bottom - dy) / scale).toInt()
 
-            // 이미지 범위 내로 제한
             val safeLeft = imageCropLeft.coerceIn(0, bitmap.width - 1)
             val safeTop = imageCropTop.coerceIn(0, bitmap.height - 1)
             val safeRight = imageCropRight.coerceIn(safeLeft + 1, bitmap.width)
@@ -581,7 +603,6 @@ class CameraFragment : Fragment() {
             Log.d(TAG, "변환된 이미지 좌표: left=$safeLeft, top=$safeTop, " +
                     "width=$safeWidth, height=$safeHeight")
 
-            // 최소 크기 검증
             if (safeWidth < 100 || safeHeight < 100) {
                 Log.w(TAG, "크롭 영역이 너무 작음. 원본 사용")
                 return bitmap
@@ -602,9 +623,6 @@ class CameraFragment : Fragment() {
         }
     }
 
-    /**
-     * 편집 화면으로 이동
-     */
     private fun navigateToEditContact(contact: Contact) {
         val bundle = bundleOf("contact" to contact)
         findNavController().navigate(R.id.action_camera_to_editContact, bundle)
