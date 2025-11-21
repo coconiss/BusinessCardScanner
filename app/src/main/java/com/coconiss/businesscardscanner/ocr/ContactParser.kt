@@ -9,18 +9,26 @@ class ContactParser {
 
     private val TAG = "ContactParser"
 
+    // 개선된 전화번호 패턴 (국제번호, 괄호, 다양한 구분자)
     private val phonePattern = Pattern.compile(
-        "(?:\\+?\\d{1,3}[-.\\s]?)?\\(?\\d{2,4}\\)?[\\d-.\\s]{7,10}"
+        "(?:\\+?82[-\\s]?)?(?:\\(?0\\d{1,2}\\)?|01[016789])[-\\s]?\\d{3,4}[-\\s]?\\d{4}"
     )
 
+    // 개선된 이메일 패턴
     private val emailPattern = Pattern.compile(
-        "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}"
+        "[a-zA-Z0-9][a-zA-Z0-9._%+-]*@[a-zA-Z0-9][a-zA-Z0-9.-]*\\.[a-zA-Z]{2,}"
+    )
+
+    // URL 패턴 (이메일과 혼동 방지)
+    private val urlPattern = Pattern.compile(
+        "(?:https?://)?(?:www\\.)?[a-zA-Z0-9-]+\\.[a-zA-Z]{2,}"
     )
 
     private val companyKeywords = listOf(
         "주식회사", "(주)", "Co.", "Ltd.", "Inc.",
         "Corporation", "Corp.", "Company", "그룹", "Group",
-        "유한회사", "㈜", "법인"
+        "유한회사", "㈜", "법인", "상사", "기업",
+        "연구소", "센터", "재단"
     )
 
     private val positionKeywords = listOf(
@@ -28,15 +36,16 @@ class ContactParser {
         "대표", "전무", "상무", "본부장", "센터장", "실장", "지사장", "공장장",
         "팀장", "부장", "차장", "과장", "대리", "주임", "사원", "연구원",
         "선임연구원", "책임연구원", "수석연구원", "파트장", "그룹장",
-        "컨설턴트", "디자이너", "개발자", "엔지니어", "아키텍트",
+        "컨설턴트", "디자이너", "개발자", "엔지니어", "아키텍트", "매니저",
         "CEO", "CTO", "CFO", "COO", "CMO", "CIO", "CSO", "CPO",
         "VP", "President", "Director", "Manager", "Leader",
         "Developer", "Designer", "Engineer", "Consultant", "Chief"
     )
 
     private val addressKeywords = listOf(
-        "시", "구", "동", "로", "길", "가", "번지", "층", "호",
-        "Street", "St.", "Ave", "Avenue", "Road", "Rd.", "Floor", "Fl."
+        "시", "구", "동", "로", "길", "가", "번지", "층", "호", "빌딩",
+        "Street", "St.", "Ave", "Avenue", "Road", "Rd.",
+        "Floor", "Fl.", "Building", "Bldg"
     )
 
     private val departmentKeywords = listOf(
@@ -44,15 +53,18 @@ class ContactParser {
         "개발", "연구", "디자인", "기술", "생산", "품질", "QA", "QC",
         "영업", "마케팅", "사업", "고객", "서비스", "해외", "국내",
         "본부", "사업부", "센터", "실", "팀", "파트", "그룹", "솔루션", "컨설팅",
-        "R&D", "HR", "GA"
+        "R&D", "HR", "GA", "부문", "Division"
     )
 
     private val companyDescriptionKeywords = listOf(
-        "코스닥상장법인", "벤처기업", "이노비즈", "메인비즈"
+        "코스닥상장법인", "벤처기업", "이노비즈", "메인비즈", "상장", "인증"
     )
 
     // 한글 이름 패턴: 2~4자
     private val koreanNamePattern = Pattern.compile("^[가-힣]{2,4}$")
+
+    // 영문 이름 패턴
+    private val englishNamePattern = Pattern.compile("^[A-Z][a-z]+(?:\\s[A-Z][a-z]+)*$")
 
     // 한국의 흔한 성씨 목록
     private val koreanSurnames = listOf(
@@ -64,44 +76,46 @@ class ContactParser {
         "은", "편", "용", "예", "경", "봉"
     )
 
-
     /**
-     * OCR 오인식 보정 함수
+     * OCR 오인식 보정 함수 (개선)
      */
     private fun correctOCRErrors(text: String): String {
         var corrected = text
 
-        // 이메일에서 쉼표를 점으로 변환
+        // 이메일 보정
         if (corrected.contains("@")) {
-            val emailPart = corrected.substringAfter("@")
-            if (emailPart.contains(",")) {
-                corrected = corrected.replace(",", ".")
-            }
+            // 쉼표를 점으로
+            corrected = corrected.replace(",", ".")
+            // @앞뒤 공백 제거
+            corrected = corrected.replace(Regex("\\s*@\\s*"), "@")
+            // 점 앞뒤 공백 제거
+            corrected = corrected.replace(Regex("\\s*\\.\\s*"), ".")
         }
 
-        // 숫자 0과 알파벳 O/o, 숫자 1과 알파벳 l 혼동 보정
-        if (corrected.contains(Regex("[0-9]"))) {
-            // 이메일 문맥이 아닐 경우에만 O/o -> 0 변환을 수행 (숫자 우선)
-            // 이메일에서는 알파벳을 우선하므로 이 변환을 건너뛴다.
-            if (!corrected.contains("@")) {
-                corrected = corrected.replace(Regex("(?<=\\d)[Oo]"), "0") // 숫자 뒤 O/o
-                corrected = corrected.replace(Regex("[Oo](?=\\d)"), "0") // 숫자 앞 O/o
-            }
-            // l -> 1 변환은 전화번호 등에서 유용하므로 항상 적용
-            corrected = corrected.replace(Regex("(?<=\\d)l"), "1")     // 숫자 뒤 l
-            corrected = corrected.replace(Regex("l(?=\\d)"), "1")     // 숫자 앞 l
+        // 전화번호 보정
+        if (corrected.contains(Regex("\\d{2,}"))) {
+            // O/o를 0으로 (숫자 문맥에서)
+            corrected = corrected.replace(Regex("(?<=[0-9])[Oo](?=[0-9])"), "0")
+            corrected = corrected.replace(Regex("^[Oo](?=[0-9])"), "0")
+            corrected = corrected.replace(Regex("(?<=[0-9])[Oo]$"), "0")
+
+            // l/I를 1로 (숫자 문맥에서)
+            corrected = corrected.replace(Regex("(?<=[0-9])[lI](?=[0-9])"), "1")
+            corrected = corrected.replace(Regex("^[lI](?=[0-9])"), "1")
+            corrected = corrected.replace(Regex("(?<=[0-9])[lI]$"), "1")
         }
 
-        // 불필요한 공백 제거
+        // 불필요한 공백 정리
         corrected = corrected.replace(Regex("\\s+"), " ").trim()
 
         return corrected
     }
 
     /**
-     * 전화번호 정규화
+     * 전화번호 정규화 (개선)
      */
     private fun normalizePhoneNumber(phone: String): String {
+        // 숫자와 + 기호만 남기기
         var normalized = phone.replace(Regex("[^0-9+]"), "")
 
         // 국제번호 처리
@@ -111,274 +125,253 @@ class ContactParser {
             normalized = "0" + normalized.substring(2)
         }
 
-        // 하이픈 추가 (010-xxxx-xxxx 형식)
-        if (normalized.startsWith("010") && normalized.length == 11) {
-            normalized = "${normalized.substring(0, 3)}-${normalized.substring(3, 7)}-${normalized.substring(7)}"
-        } else if (normalized.length == 10 && normalized.startsWith("0")) {
-            // 지역번호 (02, 031 등)
-            if (normalized.startsWith("02")) {
-                normalized = "${normalized.substring(0, 2)}-${normalized.substring(2, 6)}-${normalized.substring(6)}"
-            } else {
-                normalized = "${normalized.substring(0, 3)}-${normalized.substring(3, 6)}-${normalized.substring(6)}"
+        // 하이픈 추가
+        normalized = when {
+            // 휴대폰 (010, 011, 016, 017, 018, 019)
+            normalized.startsWith("01") && normalized.length == 11 -> {
+                "${normalized.substring(0, 3)}-${normalized.substring(3, 7)}-${normalized.substring(7)}"
             }
+            normalized.startsWith("01") && normalized.length == 10 -> {
+                "${normalized.substring(0, 3)}-${normalized.substring(3, 6)}-${normalized.substring(6)}"
+            }
+            // 서울 (02)
+            normalized.startsWith("02") && normalized.length == 10 -> {
+                "${normalized.substring(0, 2)}-${normalized.substring(2, 6)}-${normalized.substring(6)}"
+            }
+            normalized.startsWith("02") && normalized.length == 9 -> {
+                "${normalized.substring(0, 2)}-${normalized.substring(2, 5)}-${normalized.substring(5)}"
+            }
+            // 기타 지역번호 (031, 051 등)
+            normalized.startsWith("0") && normalized.length == 11 -> {
+                "${normalized.substring(0, 3)}-${normalized.substring(3, 7)}-${normalized.substring(7)}"
+            }
+            normalized.startsWith("0") && normalized.length == 10 -> {
+                "${normalized.substring(0, 3)}-${normalized.substring(3, 6)}-${normalized.substring(6)}"
+            }
+            else -> normalized
         }
 
         return normalized
     }
 
     /**
-     * 직책 추출
+     * 신뢰도 기반 라인 분류
      */
-    private fun extractPosition(line: String): String? {
-        return positionKeywords.firstOrNull { keyword ->
-            line.contains(keyword)
-        }
-    }
+    private fun classifyLine(line: String): Pair<String, Int> {
+        var maxScore = 0
+        var category = "unknown"
 
-    /**
-     * 라인 신뢰도 점수 계산
-     */
-    private fun calculateLineConfidence(line: String, category: String): Int {
-        var score = 0
+        // 이름 확인
+        val nameScore = if (koreanNamePattern.matcher(line).matches() &&
+            koreanSurnames.any { line.startsWith(it) }) {
+            40
+        } else if (englishNamePattern.matcher(line).matches()) {
+            35
+        } else 0
 
-        when (category) {
-            "name" -> {
-                if (koreanNamePattern.matcher(line).matches()) score += 30
-                // 일반적인 성씨로 시작하는 경우 점수 추가
-                if (koreanSurnames.any { line.startsWith(it) }) score += 25
-                if (line.length in 2..4) score += 20
-                if (!line.contains(Regex("[0-9@.]"))) score += 10
-            }
-            "company" -> {
-                if (companyKeywords.any { line.contains(it) }) {
-                    score += 20
+        // 회사명 확인
+        val companyScore = if (companyKeywords.any { line.contains(it) }) {
+            val hasDescription = companyDescriptionKeywords.any { line.contains(it) }
+            if (hasDescription) 10 else 35
+        } else 0
 
-                    // 키워드 외에 다른 내용이 있으면 보너스 (실제 상호명일 확률 높음)
-                    val keywordText = companyKeywords.first { line.contains(it) }
-                    if (line.trim().length > keywordText.length + 2) {
-                        score += 15
-                    }
-                }
-                // 회사 설명 문구가 포함된 경우 감점
-                if (companyDescriptionKeywords.any { line.contains(it) }) {
-                    score -= 20
-                }
-            }
-            "address" -> {
-                addressKeywords.forEach { if (line.contains(it)) score += 15 }
-                if (line.length > 10) score += 10
+        // 주소 확인
+        val addressScore = addressKeywords.count { line.contains(it) } * 15 +
+                if (line.length > 15) 10 else 0
+
+        // 직책 확인
+        val positionScore = if (positionKeywords.any { line.contains(it) }) 30 else 0
+
+        // 최고 점수 카테고리 선택
+        listOf(
+            "name" to nameScore,
+            "company" to companyScore,
+            "address" to addressScore,
+            "position" to positionScore
+        ).forEach { (cat, score) ->
+            if (score > maxScore) {
+                maxScore = score
+                category = cat
             }
         }
 
-        return score
+        return category to maxScore
     }
 
     fun parseContact(text: Text): Contact {
         val contact = Contact()
-        val allLines = text.textBlocks.flatMap { it.lines }
-            .map { correctOCRErrors(it.text.trim()) }
-            .filter { it.isNotBlank() }
+
+        // 모든 텍스트 블록을 라인별로 수집하고 신뢰도로 정렬
+        val allBlocks = text.textBlocks
+            .flatMap { block ->
+                block.lines.map { line ->
+                    Triple(
+                        correctOCRErrors(line.text.trim()),
+                        line.confidence ?: 0.5f,
+                        line.boundingBox
+                    )
+                }
+            }
+            .filter { it.first.isNotBlank() }
+            .sortedByDescending { it.second } // 신뢰도 높은 순
+
         Log.d(TAG, "--- Starting Contact Parsing ---")
-        Log.d(TAG, "All corrected lines: $allLines")
+        Log.d(TAG, "Total lines: ${allBlocks.size}")
+        allBlocks.forEachIndexed { idx, (line, conf, _) ->
+            Log.d(TAG, "Line $idx (conf: $conf): $line")
+        }
 
         val processedLines = mutableSetOf<String>()
         val allPhoneNumbers = mutableListOf<String>()
+        val allEmails = mutableListOf<String>()
 
-        // 1. 전화번호 추출
+        // 1단계: 전화번호 추출 (모든 후보)
         Log.d(TAG, "[Phase 1] Extracting Phone Numbers...")
-        allLines.forEach { line ->
+        allBlocks.forEach { (line, _, _) ->
             val phoneMatcher = phonePattern.matcher(line)
             while (phoneMatcher.find()) {
                 val rawPhone = phoneMatcher.group()
                 val normalizedPhone = normalizePhoneNumber(rawPhone)
-                Log.d(TAG, "Found phone candidate: '$rawPhone' -> Normalized: '$normalizedPhone'")
-                if (normalizedPhone.isNotEmpty()) {
+                Log.d(TAG, "Found phone: '$rawPhone' -> '$normalizedPhone'")
+                if (normalizedPhone.length >= 9) {
                     allPhoneNumbers.add(normalizedPhone)
                     processedLines.add(line)
                 }
             }
         }
 
-        if (allPhoneNumbers.isNotEmpty()) {
-            contact.phoneNumber = allPhoneNumbers.firstOrNull { it.startsWith("010") } ?: allPhoneNumbers.first()
-            Log.d(TAG, "Selected phoneNumber: '${contact.phoneNumber}' from candidates: $allPhoneNumbers")
-        }
+        // 휴대폰 번호 우선, 없으면 첫 번째
+        contact.phoneNumber = allPhoneNumbers.firstOrNull { it.startsWith("010") }
+            ?: allPhoneNumbers.firstOrNull()
+                    ?: ""
+        Log.d(TAG, "Selected phone: '${contact.phoneNumber}'")
 
-        // 2. 이메일 추출
+        // 2단계: 이메일 추출
         Log.d(TAG, "[Phase 2] Extracting Email...")
-        allLines.forEach { line ->
-            if (contact.email.isEmpty()) {
+        allBlocks.forEach { (line, _, _) ->
+            if (!processedLines.contains(line)) {
                 val emailMatcher = emailPattern.matcher(line)
-                if (emailMatcher.find()) {
-                    contact.email = emailMatcher.group()
-                    processedLines.add(line)
-                    Log.d(TAG, "Selected email: '${contact.email}'")
+                while (emailMatcher.find()) {
+                    val email = emailMatcher.group()
+                    // URL이 아닌지 확인
+                    if (!urlPattern.matcher(email).matches()) {
+                        allEmails.add(email)
+                        processedLines.add(line)
+                        Log.d(TAG, "Found email: '$email'")
+                    }
                 }
             }
         }
+        contact.email = allEmails.firstOrNull() ?: ""
 
-        val remainingLines = allLines.filterNot { processedLines.contains(it) }.toMutableList()
-        Log.d(TAG, "Remaining lines after Step 1 & 2: $remainingLines")
+        // 3단계: 복합 라인 분석 (이름 + 직책)
+        Log.d(TAG, "[Phase 3] Analyzing complex lines...")
+        val remainingLines = allBlocks
+            .filter { !processedLines.contains(it.first) }
+            .toMutableList()
 
-        // 3. 직책/부서/이름 복합 라인 분석
-        Log.d(TAG, "[Phase 3] Analyzing complex lines for Name and Position...")
-        val positionLine = remainingLines.firstOrNull { line ->
+        // 직책 키워드 포함 라인 찾기
+        val positionLine = remainingLines.firstOrNull { (line, _, _) ->
             positionKeywords.any { line.contains(it) }
         }
 
         if (positionLine != null) {
-            Log.d(TAG, "Found complex line candidate: '$positionLine'")
+            val (line, _, _) = positionLine
+            Log.d(TAG, "Found position line: '$line'")
 
-            val words = positionLine.split(Regex("[\\s/|:]+")).filter { it.isNotBlank() }
-            val nameParts = mutableListOf<String>()
+            val words = line.split(Regex("[\\s/|:,.]+")).filter { it.isNotBlank() }
+            val nameCandidates = mutableListOf<String>()
 
-            words.forEach { word ->
-                var wordProcessed = false
-
-                // "대표홍길동" 같은 결합된 단어 분리
-                for (posKey in positionKeywords) {
-                    if (word.startsWith(posKey) && word.length > posKey.length) {
-                        if (contact.position.isEmpty()) {
-                            contact.position = posKey
-                            Log.d(TAG, "Separated combined word: position='${posKey}'")
-                        }
-                        val potentialName = word.substring(posKey.length)
-                        nameParts.add(potentialName)
-                        Log.d(TAG, "Separated combined word: name part='${potentialName}'")
-                        wordProcessed = true
-                        break
-                    }
-                }
-                if (wordProcessed) return@forEach
-
-                val isPosition = positionKeywords.contains(word)
-                val isDepartment = departmentKeywords.any { word.contains(it) }
-
+            for (word in words) {
                 when {
-                    isPosition -> {
-                        if (contact.position.isEmpty()) contact.position = word
+                    positionKeywords.contains(word) -> {
+                        if (contact.position.isEmpty()) {
+                            contact.position = word
+                        }
                     }
-                    isDepartment -> { // 부서 관련 단어는 이름 후보에서 제외
-                        Log.d(TAG, "Filtered out department-related word: '$word'")
+                    departmentKeywords.any { word.contains(it) } -> {
+                        // 부서는 제외
                     }
-                    else -> {
-                        nameParts.add(word)
-                    }
-                }
-            }
-
-            if (contact.position.isNotEmpty()) {
-                Log.d(TAG, "Extracted position: '${contact.position}'")
-            }
-
-            // [수정된 로직] 이름 후보(nameParts) 중에서 실제 이름 찾기
-            if (nameParts.isNotEmpty()) {
-                Log.d(TAG, "Name candidates from complex line: $nameParts")
-
-                // 1. 이름 패턴과 성씨로 시작하는 가장 유력한 후보를 찾음
-                var foundName = nameParts.firstOrNull { candidate ->
-                    koreanNamePattern.matcher(candidate).matches() &&
-                            koreanSurnames.any { candidate.startsWith(it) }
-                }
-
-                // 2. 만약 없다면, 성씨 조건 없이 이름 패턴(2~4자 한글)에 맞는 후보를 찾음
-                if (foundName == null) {
-                    foundName = nameParts.firstOrNull { candidate ->
-                        koreanNamePattern.matcher(candidate).matches()
-                    }
-                }
-
-                if (foundName != null) {
-                    contact.name = foundName
-                    Log.d(TAG, "Selected name from complex line: '${contact.name}'")
-                } else {
-                    // 3. 개별 단어가 이름이 아닌 경우, 기존처럼 단어들을 조합하여 확인 (예: '홍 길 동' -> '홍길동')
-                    val potentialName = nameParts.joinToString("")
-                    Log.d(TAG, "No individual name match. Trying to join: '$potentialName'")
-                    if (koreanNamePattern.matcher(potentialName).matches() && koreanSurnames.any { potentialName.startsWith(it) }) {
-                        contact.name = potentialName
-                        Log.d(TAG, "Selected joined name from complex line: '${contact.name}'")
+                    koreanNamePattern.matcher(word).matches() -> {
+                        nameCandidates.add(word)
                     }
                 }
             }
+
+            // 이름 선택 (성씨 있는 것 우선)
+            contact.name = nameCandidates.firstOrNull { name ->
+                koreanSurnames.any { name.startsWith(it) }
+            } ?: nameCandidates.firstOrNull() ?: ""
 
             remainingLines.remove(positionLine)
-        } else {
-            Log.d(TAG, "No complex line with position found.")
         }
 
-        // 4. 회사명 추출 (신뢰도 기반)
+        // 4단계: 회사명 추출
         Log.d(TAG, "[Phase 4] Extracting Company...")
-        val companyLines = remainingLines.filter { line ->
-            companyKeywords.any { line.contains(it) }
-        }.sortedByDescending { calculateLineConfidence(it, "company") }
+        val companyLines = remainingLines
+            .filter { (line, _, _) -> companyKeywords.any { line.contains(it) } }
+            .sortedByDescending { (line, conf, _) ->
+                val (_, score) = classifyLine(line)
+                score * conf
+            }
 
         if (companyLines.isNotEmpty()) {
-            contact.company = companyLines.first()
+            contact.company = companyLines.first().first
             remainingLines.remove(companyLines.first())
-            Log.d(TAG, "Selected company: '${contact.company}' from candidates: $companyLines")
-        } else {
-            Log.d(TAG, "No company candidates found.")
+            Log.d(TAG, "Selected company: '${contact.company}'")
         }
 
-        // 5. 주소 추출
+        // 5단계: 주소 추출
         Log.d(TAG, "[Phase 5] Extracting Address...")
-        val addressLines = remainingLines.filter { line ->
-            addressKeywords.any { line.contains(it) } && line.length > 5
-        }.sortedByDescending { calculateLineConfidence(it, "address") }
+        val addressLines = remainingLines
+            .filter { (line, _, _) ->
+                addressKeywords.any { line.contains(it) } && line.length > 8
+            }
+            .sortedByDescending { (line, conf, _) ->
+                val keywordCount = addressKeywords.count { line.contains(it) }
+                keywordCount * 10 + line.length + conf * 10
+            }
 
         if (addressLines.isNotEmpty()) {
-            contact.address = addressLines.first()
+            contact.address = addressLines.first().first
             remainingLines.remove(addressLines.first())
-            Log.d(TAG, "Selected address: '${contact.address}' from candidates: $addressLines")
-        } else {
-            Log.d(TAG, "No address candidates found.")
+            Log.d(TAG, "Selected address: '${contact.address}'")
         }
 
-        // 6. 이름이 아직 없으면 남은 라인에서 추출
+        // 6단계: 이름이 없으면 추출
         if (contact.name.isEmpty()) {
             Log.d(TAG, "[Phase 6] Extracting Name from remaining lines...")
-            val nameCandidates = remainingLines
-                .filter { line ->
+            val nameLines = remainingLines
+                .filter { (line, _, _) ->
                     koreanNamePattern.matcher(line).matches() &&
-                            koreanSurnames.any { line.startsWith(it) } &&
-                            !departmentKeywords.any{ line.contains(it) }
+                            !departmentKeywords.any { line.contains(it) }
                 }
-                .sortedByDescending { calculateLineConfidence(it, "name") }
+                .sortedByDescending { (line, conf, _) ->
+                    val hasCommonSurname = koreanSurnames.any { line.startsWith(it) }
+                    (if (hasCommonSurname) 20 else 0) + conf * 10
+                }
 
-            if (nameCandidates.isNotEmpty()) {
-                contact.name = nameCandidates.first()
-                remainingLines.remove(contact.name)
-                Log.d(TAG, "Selected name: '${contact.name}' from candidates: $nameCandidates")
-            } else if (remainingLines.isNotEmpty()) {
-                // 최후의 수단으로 남은 라인 중 가장 짧은 것을 이름으로 간주 (성씨 조건 없이)
-                val fallbackName = remainingLines.filterNot { departmentKeywords.any { dk -> it.contains(dk) } }.minByOrNull { it.length }
-                if (fallbackName != null) {
-                    contact.name = fallbackName
-                    remainingLines.remove(contact.name)
-                    Log.d(TAG, "Selected name (fallback): '${contact.name}' from remaining lines: $remainingLines")
-                }
-            } else {
-                Log.d(TAG, "No name candidates found in remaining lines.")
+            contact.name = nameLines.firstOrNull()?.first ?: ""
+            if (contact.name.isNotEmpty()) {
+                Log.d(TAG, "Selected name: '${contact.name}'")
             }
         }
 
-        // 7. 직책이 아직 없으면 남은 라인에서 찾기
+        // 7단계: 직책이 없으면 추출
         if (contact.position.isEmpty()) {
-            Log.d(TAG, "[Phase 7] Extracting Position from remaining lines...")
-            remainingLines.forEach { line ->
-                val position = extractPosition(line)
+            remainingLines.forEach { (line, _, _) ->
+                val position = positionKeywords.firstOrNull { line.contains(it) }
                 if (position != null) {
                     contact.position = position
-                    remainingLines.remove(line)
-                    Log.d(TAG, "Selected position (fallback): '${contact.position}' from line: '$line'")
+                    Log.d(TAG, "Selected position: '${contact.position}'")
                     return@forEach
                 }
             }
         }
 
         Log.d(TAG, "--- Finished Contact Parsing ---")
-        Log.d(TAG, "Final Parsed Contact: $contact")
+        Log.d(TAG, "Final Contact: $contact")
+
         return contact
     }
 }

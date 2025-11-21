@@ -10,7 +10,9 @@ import android.media.ExifInterface
 import android.net.Uri
 import android.os.Bundle
 import android.util.Log
+import android.util.Size
 import android.view.LayoutInflater
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Toast
@@ -45,6 +47,8 @@ class CameraFragment : Fragment() {
     private val binding get() = _binding!!
 
     private var imageCapture: ImageCapture? = null
+    private var camera: Camera? = null
+    private lateinit var cameraProvider: ProcessCameraProvider
     private lateinit var cameraExecutor: ExecutorService
     private lateinit var textRecognizer: TextRecognizer
     private lateinit var contactParser: ContactParser
@@ -121,35 +125,100 @@ class CameraFragment : Fragment() {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(requireContext())
 
         cameraProviderFuture.addListener({
-            val cameraProvider = cameraProviderFuture.get()
+            cameraProvider = cameraProviderFuture.get()
 
-            val preview = Preview.Builder().build().also {
-                it.setSurfaceProvider(binding.previewView.surfaceProvider)
-            }
+            // Preview 설정
+            val preview = Preview.Builder()
+                .setTargetAspectRatio(AspectRatio.RATIO_4_3)
+                .build()
+                .also {
+                    it.setSurfaceProvider(binding.previewView.surfaceProvider)
+                }
 
+            // ImageCapture 설정 (개선: 고해상도, 고품질)
             imageCapture = ImageCapture.Builder()
                 .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
+                .setTargetResolution(Size(1920, 1080)) // HD 해상도
                 .setTargetRotation(binding.previewView.display.rotation)
+                .setFlashMode(ImageCapture.FLASH_MODE_AUTO) // 자동 플래시
                 .build()
 
             val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
 
             try {
+                // 기존 바인딩 해제
                 cameraProvider.unbindAll()
-                cameraProvider.bindToLifecycle(
+
+                // 카메라와 use case 바인딩
+                camera = cameraProvider.bindToLifecycle(
                     viewLifecycleOwner,
                     cameraSelector,
                     preview,
                     imageCapture
                 )
+
+                // 터치 포커스 설정
+                setupTouchFocus()
+
             } catch (e: Exception) {
+                Log.e("CameraFragment", "카메라 시작 실패", e)
                 Toast.makeText(requireContext(), "카메라 시작 실패: ${e.message}", Toast.LENGTH_SHORT).show()
             }
         }, ContextCompat.getMainExecutor(requireContext()))
     }
 
+    /**
+     * 터치 포커스 기능 설정
+     */
+    private fun setupTouchFocus() {
+        binding.previewView.setOnTouchListener { _, event ->
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    return@setOnTouchListener true
+                }
+                MotionEvent.ACTION_UP -> {
+                    val factory = binding.previewView.meteringPointFactory
+                    val point = factory.createPoint(event.x, event.y)
+
+                    // 포커스 및 노출 측정 액션 생성
+                    val action = FocusMeteringAction.Builder(point)
+                        .setAutoCancelDuration(3, java.util.concurrent.TimeUnit.SECONDS)
+                        .build()
+
+                    // 포커스 실행
+                    camera?.cameraControl?.startFocusAndMetering(action)?.addListener({
+                        Log.d("CameraFragment", "포커스 완료")
+                    }, ContextCompat.getMainExecutor(requireContext()))
+
+                    // 포커스 인디케이터 표시 (선택사항)
+                    showFocusIndicator(event.x, event.y)
+
+                    return@setOnTouchListener true
+                }
+            }
+            false
+        }
+    }
+
+    /**
+     * 포커스 인디케이터 표시 (선택사항 - UI 피드백)
+     */
+    private fun showFocusIndicator(x: Float, y: Float) {
+        // 여기에 포커스 링 애니메이션 추가 가능
+        Log.d("CameraFragment", "포커스 위치: ($x, $y)")
+    }
+
     private fun takePhoto() {
         val imageCapture = imageCapture ?: return
+
+        // 촬영 전 포커스 트리거 (중앙)
+        val centerX = binding.previewView.width / 2f
+        val centerY = binding.previewView.height / 2f
+        val factory = binding.previewView.meteringPointFactory
+        val centerPoint = factory.createPoint(centerX, centerY)
+        val focusAction = FocusMeteringAction.Builder(centerPoint).build()
+
+        camera?.cameraControl?.startFocusAndMetering(focusAction)
 
         val photoFile = File(
             requireContext().cacheDir,
@@ -161,6 +230,7 @@ class CameraFragment : Fragment() {
 
         binding.progressBar.visibility = View.VISIBLE
         binding.btnCapture.isEnabled = false
+        binding.btnGallery.isEnabled = false
         binding.statusText.visibility = View.VISIBLE
         binding.statusText.text = "촬영 중..."
 
@@ -169,12 +239,15 @@ class CameraFragment : Fragment() {
             ContextCompat.getMainExecutor(requireContext()),
             object : ImageCapture.OnImageSavedCallback {
                 override fun onImageSaved(output: ImageCapture.OutputFileResults) {
+                    Log.d("CameraFragment", "사진 저장 성공: ${photoFile.absolutePath}")
                     processImageFile(photoFile)
                 }
 
                 override fun onError(exc: ImageCaptureException) {
+                    Log.e("CameraFragment", "촬영 실패", exc)
                     binding.progressBar.visibility = View.GONE
                     binding.btnCapture.isEnabled = true
+                    binding.btnGallery.isEnabled = true
                     binding.statusText.visibility = View.GONE
                     Toast.makeText(requireContext(), "촬영 실패: ${exc.message}", Toast.LENGTH_SHORT).show()
                 }
@@ -189,8 +262,12 @@ class CameraFragment : Fragment() {
                     binding.statusText.text = "이미지 로딩 중..."
                 }
 
+                // EXIF 정보로 회전 각도 확인
                 val exif = ExifInterface(file.absolutePath)
-                val orientation = exif.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
+                val orientation = exif.getAttributeInt(
+                    ExifInterface.TAG_ORIENTATION,
+                    ExifInterface.ORIENTATION_NORMAL
+                )
                 val rotationDegrees = when (orientation) {
                     ExifInterface.ORIENTATION_ROTATE_90 -> 90f
                     ExifInterface.ORIENTATION_ROTATE_180 -> 180f
@@ -198,13 +275,19 @@ class CameraFragment : Fragment() {
                     else -> 0f
                 }
 
-                val bitmap = BitmapFactory.decodeFile(file.absolutePath)
-                val rotatedBitmap = rotateBitmap(bitmap, rotationDegrees)
+                // 이미지 로딩 (메모리 효율적으로)
+                val bitmap = decodeSampledBitmapFromFile(file.absolutePath, 2048, 2048)
+                val rotatedBitmap = if (rotationDegrees != 0f) {
+                    rotateBitmap(bitmap, rotationDegrees)
+                } else {
+                    bitmap
+                }
 
                 withContext(Dispatchers.Main) {
                     binding.statusText.text = "명함 영역 자르는 중..."
                 }
 
+                // 가이드라인 영역으로 크롭
                 val guidelineRect = binding.guidelineView.getGuidelineRect()
                 val croppedBitmap = cropImage(rotatedBitmap, guidelineRect)
 
@@ -233,34 +316,54 @@ class CameraFragment : Fragment() {
                     binding.statusText.text = "텍스트 인식 중..."
                 }
 
+                // OCR 수행
                 val text = textRecognizer.recognizeText(preprocessedBitmap)
                 Log.d("OcrResult", "Recognized Text: ${text.text}")
+                Log.d("OcrResult", "Text blocks: ${text.textBlocks.size}")
 
                 withContext(Dispatchers.Main) {
                     binding.statusText.text = "정보 추출 중..."
                 }
 
+                // 연락처 정보 파싱
                 val contact = contactParser.parseContact(text)
                 contact.imageUri = file.absolutePath
 
                 withContext(Dispatchers.Main) {
                     binding.progressBar.visibility = View.GONE
                     binding.btnCapture.isEnabled = true
+                    binding.btnGallery.isEnabled = true
                     binding.statusText.visibility = View.GONE
 
                     if (text.text.isNotEmpty()) {
                         navigateToEditContact(contact)
                     } else {
-                        Toast.makeText(requireContext(), "텍스트를 인식할 수 없습니다", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(
+                            requireContext(),
+                            "텍스트를 인식할 수 없습니다. 조명을 확인하고 다시 촬영해주세요.",
+                            Toast.LENGTH_LONG
+                        ).show()
                     }
                 }
+
+                // 메모리 해제
+                if (bitmap != rotatedBitmap) bitmap.recycle()
+                rotatedBitmap.recycle()
+                croppedBitmap.recycle()
+                preprocessedBitmap.recycle()
+
             } catch (e: Exception) {
+                Log.e("ProcessError", "이미지 처리 실패", e)
                 withContext(Dispatchers.Main) {
                     binding.progressBar.visibility = View.GONE
                     binding.btnCapture.isEnabled = true
+                    binding.btnGallery.isEnabled = true
                     binding.statusText.visibility = View.GONE
-                    Toast.makeText(requireContext(), "처리 실패: ${e.message}", Toast.LENGTH_SHORT).show()
-                    Log.e("ProcessError", "Error: ${e.stackTraceToString()}")
+                    Toast.makeText(
+                        requireContext(),
+                        "처리 실패: ${e.message}",
+                        Toast.LENGTH_SHORT
+                    ).show()
                 }
             }
         }
@@ -268,6 +371,8 @@ class CameraFragment : Fragment() {
 
     private fun processImageUri(uri: Uri) {
         binding.progressBar.visibility = View.VISIBLE
+        binding.btnCapture.isEnabled = false
+        binding.btnGallery.isEnabled = false
         binding.statusText.visibility = View.VISIBLE
         binding.statusText.text = "이미지 로딩 중..."
 
@@ -276,6 +381,17 @@ class CameraFragment : Fragment() {
                 val inputStream = requireContext().contentResolver.openInputStream(uri)
                 val bitmap = BitmapFactory.decodeStream(inputStream)
                 inputStream?.close()
+
+                if (bitmap == null) {
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(requireContext(), "이미지를 불러올 수 없습니다", Toast.LENGTH_SHORT).show()
+                        binding.progressBar.visibility = View.GONE
+                        binding.btnCapture.isEnabled = true
+                        binding.btnGallery.isEnabled = true
+                        binding.statusText.visibility = View.GONE
+                    }
+                    return@launch
+                }
 
                 withContext(Dispatchers.Main) {
                     binding.statusText.text = "이미지 전처리 중..."
@@ -315,25 +431,89 @@ class CameraFragment : Fragment() {
 
                 withContext(Dispatchers.Main) {
                     binding.progressBar.visibility = View.GONE
+                    binding.btnCapture.isEnabled = true
+                    binding.btnGallery.isEnabled = true
                     binding.statusText.visibility = View.GONE
 
                     if (text.text.isNotEmpty()) {
                         navigateToEditContact(contact)
                     } else {
-                        Toast.makeText(requireContext(), "텍스트를 인식할 수 없습니다", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(
+                            requireContext(),
+                            "텍스트를 인식할 수 없습니다",
+                            Toast.LENGTH_SHORT
+                        ).show()
                     }
                 }
+
+                // 메모리 해제
+                bitmap.recycle()
+                preprocessedBitmap.recycle()
+
             } catch (e: Exception) {
+                Log.e("ProcessError", "이미지 처리 실패", e)
                 withContext(Dispatchers.Main) {
                     binding.progressBar.visibility = View.GONE
+                    binding.btnCapture.isEnabled = true
+                    binding.btnGallery.isEnabled = true
                     binding.statusText.visibility = View.GONE
-                    Toast.makeText(requireContext(), "처리 실패: ${e.message}", Toast.LENGTH_SHORT).show()
-                    Log.e("ProcessError", "Error: ${e.stackTraceToString()}")
+                    Toast.makeText(
+                        requireContext(),
+                        "처리 실패: ${e.message}",
+                        Toast.LENGTH_SHORT
+                    ).show()
                 }
             }
         }
     }
 
+    /**
+     * 메모리 효율적인 비트맵 디코딩
+     */
+    private fun decodeSampledBitmapFromFile(
+        path: String,
+        reqWidth: Int,
+        reqHeight: Int
+    ): Bitmap {
+        return BitmapFactory.Options().run {
+            inJustDecodeBounds = true
+            BitmapFactory.decodeFile(path, this)
+
+            // 샘플 크기 계산
+            inSampleSize = calculateInSampleSize(this, reqWidth, reqHeight)
+
+            inJustDecodeBounds = false
+            BitmapFactory.decodeFile(path, this)
+        }
+    }
+
+    /**
+     * 적절한 샘플 크기 계산
+     */
+    private fun calculateInSampleSize(
+        options: BitmapFactory.Options,
+        reqWidth: Int,
+        reqHeight: Int
+    ): Int {
+        val (height: Int, width: Int) = options.run { outHeight to outWidth }
+        var inSampleSize = 1
+
+        if (height > reqHeight || width > reqWidth) {
+            val halfHeight: Int = height / 2
+            val halfWidth: Int = width / 2
+
+            while (halfHeight / inSampleSize >= reqHeight &&
+                halfWidth / inSampleSize >= reqWidth) {
+                inSampleSize *= 2
+            }
+        }
+
+        return inSampleSize
+    }
+
+    /**
+     * 가이드라인 영역으로 이미지 크롭
+     */
     private fun cropImage(bitmap: Bitmap, cropRect: RectF): Bitmap {
         val imageWidth = bitmap.width.toFloat()
         val imageHeight = bitmap.height.toFloat()
@@ -341,15 +521,20 @@ class CameraFragment : Fragment() {
         val viewWidth = binding.previewView.width.toFloat()
         val viewHeight = binding.previewView.height.toFloat()
 
+        // 이미지가 뷰에 맞춰진 스케일 계산
         val scale = max(viewWidth / imageWidth, viewHeight / imageHeight)
 
+        // 이미지가 뷰 중앙에 배치되었을 때의 오프셋 계산
         val dx = (viewWidth - imageWidth * scale) / 2f
         val dy = (viewHeight - imageHeight * scale) / 2f
 
+        // 뷰 좌표를 이미지 좌표로 변환
         val imageCropLeft = ((cropRect.left - dx) / scale).toInt().coerceAtLeast(0)
         val imageCropTop = ((cropRect.top - dy) / scale).toInt().coerceAtLeast(0)
-        val imageCropWidth = (cropRect.width() / scale).toInt().coerceAtMost(bitmap.width - imageCropLeft)
-        val imageCropHeight = (cropRect.height() / scale).toInt().coerceAtMost(bitmap.height - imageCropTop)
+        val imageCropWidth = (cropRect.width() / scale).toInt()
+            .coerceAtMost(bitmap.width - imageCropLeft)
+        val imageCropHeight = (cropRect.height() / scale).toInt()
+            .coerceAtMost(bitmap.height - imageCropTop)
 
         return Bitmap.createBitmap(
             bitmap,
@@ -360,6 +545,9 @@ class CameraFragment : Fragment() {
         )
     }
 
+    /**
+     * 비트맵 회전
+     */
     private fun rotateBitmap(bitmap: Bitmap, degrees: Float): Bitmap {
         if (degrees == 0f) return bitmap
 
@@ -368,6 +556,9 @@ class CameraFragment : Fragment() {
         return Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
     }
 
+    /**
+     * 편집 화면으로 이동
+     */
     private fun navigateToEditContact(contact: Contact) {
         val bundle = bundleOf("contact" to contact)
         findNavController().navigate(R.id.action_camera_to_editContact, bundle)
