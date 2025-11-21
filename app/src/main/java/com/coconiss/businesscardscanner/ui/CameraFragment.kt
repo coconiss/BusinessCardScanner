@@ -40,8 +40,11 @@ import java.util.*
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import kotlin.math.max
+import kotlin.math.min
 
 class CameraFragment : Fragment() {
+
+    private val TAG = "CameraFragment"
 
     private var _binding: FragmentCameraBinding? = null
     private val binding get() = _binding!!
@@ -138,7 +141,7 @@ class CameraFragment : Fragment() {
             // ImageCapture 설정 (개선: 고해상도, 고품질)
             imageCapture = ImageCapture.Builder()
                 .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
-                .setTargetResolution(Size(1920, 1080)) // HD 해상도
+                .setTargetResolution(Size(1080, 1920)) // 세로 해상도 (폭 x 높이)
                 .setTargetRotation(binding.previewView.display.rotation)
                 .setFlashMode(ImageCapture.FLASH_MODE_AUTO) // 자동 플래시
                 .build()
@@ -262,34 +265,38 @@ class CameraFragment : Fragment() {
                     binding.statusText.text = "이미지 로딩 중..."
                 }
 
-                // EXIF 정보로 회전 각도 확인
-                val exif = ExifInterface(file.absolutePath)
-                val orientation = exif.getAttributeInt(
-                    ExifInterface.TAG_ORIENTATION,
-                    ExifInterface.ORIENTATION_NORMAL
-                )
-                val rotationDegrees = when (orientation) {
-                    ExifInterface.ORIENTATION_ROTATE_90 -> 90f
-                    ExifInterface.ORIENTATION_ROTATE_180 -> 180f
-                    ExifInterface.ORIENTATION_ROTATE_270 -> 270f
-                    else -> 0f
-                }
+                Log.d(TAG, "=== 이미지 처리 시작 ===")
 
-                // 이미지 로딩 (메모리 효율적으로)
+                // 이미지 로딩 (메모리 효율적으로, 회전 없이)
                 val bitmap = decodeSampledBitmapFromFile(file.absolutePath, 2048, 2048)
-                val rotatedBitmap = if (rotationDegrees != 0f) {
-                    rotateBitmap(bitmap, rotationDegrees)
-                } else {
-                    bitmap
-                }
+
+                Log.d(TAG, "로딩된 이미지 크기: ${bitmap.width} x ${bitmap.height}")
 
                 withContext(Dispatchers.Main) {
                     binding.statusText.text = "명함 영역 자르는 중..."
+
+                    // 가이드라인 정보 로깅
+                    val guidelineRect = binding.guidelineView.getGuidelineRect()
+                    Log.d(TAG, "PreviewView 크기: ${binding.previewView.width} x ${binding.previewView.height}")
                 }
 
                 // 가이드라인 영역으로 크롭
-                val guidelineRect = binding.guidelineView.getGuidelineRect()
-                val croppedBitmap = cropImage(rotatedBitmap, guidelineRect)
+                val guidelineRect = withContext(Dispatchers.Main) {
+                    binding.guidelineView.getGuidelineRect()
+                }
+                val croppedBitmap = cropImage(bitmap, guidelineRect)
+
+                Log.d(TAG, "크롭된 이미지 크기: ${croppedBitmap.width} x ${croppedBitmap.height}")
+
+                // 크롭 결과 저장 (디버깅용)
+                val croppedFile = File(
+                    requireContext().cacheDir,
+                    "cropped_${file.name}"
+                )
+                croppedFile.outputStream().use { output ->
+                    croppedBitmap.compress(Bitmap.CompressFormat.JPEG, 95, output)
+                }
+                Log.d(TAG, "크롭된 이미지 저장: ${croppedFile.absolutePath}")
 
                 withContext(Dispatchers.Main) {
                     binding.statusText.text = "이미지 전처리 중..."
@@ -297,11 +304,14 @@ class CameraFragment : Fragment() {
 
                 // 이미지 전처리 적용
                 val preprocessedBitmap = try {
-                    imagePreprocessor.preprocessBusinessCard(croppedBitmap)
+                    // enableWarp를 false로 설정하여 자동 명함 검출 비활성화
+                    imagePreprocessor.minimalPreprocess(croppedBitmap)
                 } catch (e: Exception) {
                     Log.e("Preprocessing", "전처리 실패, 간단한 전처리 사용: ${e.message}")
                     imagePreprocessor.simplePreprocess(croppedBitmap)
                 }
+
+                Log.d(TAG, "전처리된 이미지 크기: ${preprocessedBitmap.width} x ${preprocessedBitmap.height}")
 
                 // 전처리된 이미지를 파일로 저장
                 val preprocessedFile = File(
@@ -311,6 +321,7 @@ class CameraFragment : Fragment() {
                 preprocessedFile.outputStream().use { output ->
                     preprocessedBitmap.compress(Bitmap.CompressFormat.JPEG, 95, output)
                 }
+                Log.d(TAG, "전처리된 이미지 저장: ${preprocessedFile.absolutePath}")
 
                 withContext(Dispatchers.Main) {
                     binding.statusText.text = "텍스트 인식 중..."
@@ -318,8 +329,8 @@ class CameraFragment : Fragment() {
 
                 // OCR 수행
                 val text = textRecognizer.recognizeText(preprocessedBitmap)
-                Log.d("OcrResult", "Recognized Text: ${text.text}")
-                Log.d("OcrResult", "Text blocks: ${text.textBlocks.size}")
+                Log.d(TAG, "인식된 텍스트: ${text.text}")
+                Log.d(TAG, "텍스트 블록 수: ${text.textBlocks.size}")
 
                 withContext(Dispatchers.Main) {
                     binding.statusText.text = "정보 추출 중..."
@@ -328,6 +339,8 @@ class CameraFragment : Fragment() {
                 // 연락처 정보 파싱
                 val contact = contactParser.parseContact(text)
                 contact.imageUri = file.absolutePath
+
+                Log.d(TAG, "=== 이미지 처리 완료 ===")
 
                 withContext(Dispatchers.Main) {
                     binding.progressBar.visibility = View.GONE
@@ -347,8 +360,7 @@ class CameraFragment : Fragment() {
                 }
 
                 // 메모리 해제
-                if (bitmap != rotatedBitmap) bitmap.recycle()
-                rotatedBitmap.recycle()
+                bitmap.recycle()
                 croppedBitmap.recycle()
                 preprocessedBitmap.recycle()
 
@@ -512,48 +524,82 @@ class CameraFragment : Fragment() {
     }
 
     /**
-     * 가이드라인 영역으로 이미지 크롭
+     * 가이드라인 영역으로 이미지 크롭 (개선 버전)
      */
     private fun cropImage(bitmap: Bitmap, cropRect: RectF): Bitmap {
-        val imageWidth = bitmap.width.toFloat()
-        val imageHeight = bitmap.height.toFloat()
+        try {
+            val imageWidth = bitmap.width.toFloat()
+            val imageHeight = bitmap.height.toFloat()
 
-        val viewWidth = binding.previewView.width.toFloat()
-        val viewHeight = binding.previewView.height.toFloat()
+            val viewWidth = binding.previewView.width.toFloat()
+            val viewHeight = binding.previewView.height.toFloat()
 
-        // 이미지가 뷰에 맞춰진 스케일 계산
-        val scale = max(viewWidth / imageWidth, viewHeight / imageHeight)
+            Log.d(TAG, "=== Crop 좌표 변환 디버깅 ===")
+            Log.d(TAG, "이미지 크기: ${imageWidth.toInt()} x ${imageHeight.toInt()}")
+            Log.d(TAG, "뷰 크기: ${viewWidth.toInt()} x ${viewHeight.toInt()}")
+            Log.d(TAG, "가이드라인 Rect: left=${cropRect.left}, top=${cropRect.top}, " +
+                    "width=${cropRect.width()}, height=${cropRect.height()}")
 
-        // 이미지가 뷰 중앙에 배치되었을 때의 오프셋 계산
-        val dx = (viewWidth - imageWidth * scale) / 2f
-        val dy = (viewHeight - imageHeight * scale) / 2f
+            // PreviewView의 ScaleType 확인 (기본값: FILL_CENTER)
+            // FILL_CENTER는 이미지를 뷰에 꽉 채우면서 비율 유지
+            val imageAspect = imageWidth / imageHeight
+            val viewAspect = viewWidth / viewHeight
 
-        // 뷰 좌표를 이미지 좌표로 변환
-        val imageCropLeft = ((cropRect.left - dx) / scale).toInt().coerceAtLeast(0)
-        val imageCropTop = ((cropRect.top - dy) / scale).toInt().coerceAtLeast(0)
-        val imageCropWidth = (cropRect.width() / scale).toInt()
-            .coerceAtMost(bitmap.width - imageCropLeft)
-        val imageCropHeight = (cropRect.height() / scale).toInt()
-            .coerceAtMost(bitmap.height - imageCropTop)
+            val scale: Float
+            val dx: Float
+            val dy: Float
 
-        return Bitmap.createBitmap(
-            bitmap,
-            imageCropLeft,
-            imageCropTop,
-            imageCropWidth,
-            imageCropHeight
-        )
-    }
+            if (imageAspect > viewAspect) {
+                // 이미지가 더 넓음 -> 높이 기준으로 스케일, 좌우가 잘림
+                scale = viewHeight / imageHeight
+                dx = (viewWidth - imageWidth * scale) / 2f
+                dy = 0f
+            } else {
+                // 이미지가 더 좁음 -> 너비 기준으로 스케일, 상하가 잘림
+                scale = viewWidth / imageWidth
+                dx = 0f
+                dy = (viewHeight - imageHeight * scale) / 2f
+            }
 
-    /**
-     * 비트맵 회전
-     */
-    private fun rotateBitmap(bitmap: Bitmap, degrees: Float): Bitmap {
-        if (degrees == 0f) return bitmap
+            Log.d(TAG, "Scale: $scale, dx: $dx, dy: $dy")
 
-        val matrix = Matrix()
-        matrix.postRotate(degrees)
-        return Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+            // 뷰 좌표를 이미지 좌표로 변환
+            val imageCropLeft = ((cropRect.left - dx) / scale).toInt()
+            val imageCropTop = ((cropRect.top - dy) / scale).toInt()
+            val imageCropRight = ((cropRect.right - dx) / scale).toInt()
+            val imageCropBottom = ((cropRect.bottom - dy) / scale).toInt()
+
+            // 이미지 범위 내로 제한
+            val safeLeft = imageCropLeft.coerceIn(0, bitmap.width - 1)
+            val safeTop = imageCropTop.coerceIn(0, bitmap.height - 1)
+            val safeRight = imageCropRight.coerceIn(safeLeft + 1, bitmap.width)
+            val safeBottom = imageCropBottom.coerceIn(safeTop + 1, bitmap.height)
+
+            val safeWidth = safeRight - safeLeft
+            val safeHeight = safeBottom - safeTop
+
+            Log.d(TAG, "변환된 이미지 좌표: left=$safeLeft, top=$safeTop, " +
+                    "width=$safeWidth, height=$safeHeight")
+
+            // 최소 크기 검증
+            if (safeWidth < 100 || safeHeight < 100) {
+                Log.w(TAG, "크롭 영역이 너무 작음. 원본 사용")
+                return bitmap
+            }
+
+            return Bitmap.createBitmap(
+                bitmap,
+                safeLeft,
+                safeTop,
+                safeWidth,
+                safeHeight
+            )
+
+        } catch (e: Exception) {
+            Log.e(TAG, "이미지 크롭 실패, 원본 반환: ${e.message}")
+            e.printStackTrace()
+            return bitmap
+        }
     }
 
     /**
